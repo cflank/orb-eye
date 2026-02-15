@@ -176,25 +176,60 @@ public class OrbAccessibilityService extends AccessibilityService {
 
     private void handleRequest(Socket client) {
         try {
-            BufferedReader reader = new BufferedReader(new InputStreamReader(client.getInputStream()));
-            String requestLine = reader.readLine();
-            if (requestLine == null) { client.close(); return; }
+            java.io.InputStream rawIn = client.getInputStream();
 
-            // Read headers
-            String line;
+            // Read all available data into a byte buffer
+            byte[] headerBuf = new byte[8192];
+            int headerEnd = -1;
+            int totalRead = 0;
+
+            // Read until we find \r\n\r\n (end of headers)
+            while (totalRead < headerBuf.length) {
+                int n = rawIn.read(headerBuf, totalRead, headerBuf.length - totalRead);
+                if (n < 0) break;
+                totalRead += n;
+                // Search for \r\n\r\n
+                for (int i = 0; i <= totalRead - 4; i++) {
+                    if (headerBuf[i] == '\r' && headerBuf[i+1] == '\n' && headerBuf[i+2] == '\r' && headerBuf[i+3] == '\n') {
+                        headerEnd = i;
+                        break;
+                    }
+                }
+                if (headerEnd >= 0) break;
+            }
+
+            if (headerEnd < 0) { client.close(); return; }
+
+            String headerStr = new String(headerBuf, 0, headerEnd, "UTF-8");
+            String[] headerLines = headerStr.split("\r\n");
+            String requestLine = headerLines[0];
+
             int contentLength = 0;
-            while ((line = reader.readLine()) != null && !line.isEmpty()) {
-                if (line.toLowerCase().startsWith("content-length:")) {
-                    contentLength = Integer.parseInt(line.substring(15).trim());
+            for (String hl : headerLines) {
+                if (hl.toLowerCase().startsWith("content-length:")) {
+                    contentLength = Integer.parseInt(hl.substring(15).trim());
                 }
             }
 
-            // Read body if present
+            // Body starts at headerEnd + 4
+            int bodyStart = headerEnd + 4;
+            int bodyBytesAlreadyRead = totalRead - bodyStart;
+
             String body = "";
             if (contentLength > 0) {
-                char[] buf = new char[contentLength];
-                reader.read(buf, 0, contentLength);
-                body = new String(buf);
+                byte[] bodyBytes = new byte[contentLength];
+                // Copy already-read body bytes
+                if (bodyBytesAlreadyRead > 0) {
+                    System.arraycopy(headerBuf, bodyStart, bodyBytes, 0, Math.min(bodyBytesAlreadyRead, contentLength));
+                }
+                // Read remaining body bytes
+                int bodyRead = Math.min(bodyBytesAlreadyRead, contentLength);
+                while (bodyRead < contentLength) {
+                    int n = rawIn.read(bodyBytes, bodyRead, contentLength - bodyRead);
+                    if (n < 0) break;
+                    bodyRead += n;
+                }
+                body = new String(bodyBytes, 0, bodyRead, "UTF-8");
             }
 
             String[] parts = requestLine.split(" ");
