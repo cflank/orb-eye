@@ -3,10 +3,15 @@ package com.orb.eye;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.app.Notification;
+import android.content.ClipData;
+import android.content.ClipboardManager;
+import android.content.Context;
 import android.graphics.Bitmap;
 import android.graphics.Path;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.Parcelable;
 import android.util.Base64;
 import android.util.Log;
@@ -347,7 +352,10 @@ public class OrbAccessibilityService extends AccessibilityService {
             }
         }
 
-        if (target == null) return errorJson("No editable field found");
+        if (target == null) {
+            // Fallback: clipboard + paste
+            return clipboardPaste(text);
+        }
 
         String newText = text;
         if (append && target.getText() != null) {
@@ -712,7 +720,9 @@ public class OrbAccessibilityService extends AccessibilityService {
             }
         }
 
-        if (focused == null) return errorJson("No editable field found");
+        if (focused == null) {
+            return clipboardPaste(text);
+        }
 
         if (!append) {
             Bundle clearArgs = new Bundle();
@@ -840,6 +850,45 @@ public class OrbAccessibilityService extends AccessibilityService {
             });
 
         return future.get(5, TimeUnit.SECONDS);
+    }
+
+    // ===== Clipboard Paste Fallback =====
+
+    private String clipboardPaste(String text) throws Exception {
+        CompletableFuture<Boolean> clipSet = new CompletableFuture<>();
+
+        // ClipboardManager must run on main thread
+        new Handler(Looper.getMainLooper()).post(() -> {
+            try {
+                ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                cm.setPrimaryClip(ClipData.newPlainText("orb", text));
+                clipSet.complete(true);
+            } catch (Exception e) {
+                Log.e(TAG, "Clipboard set error: " + e.getMessage());
+                clipSet.complete(false);
+            }
+        });
+
+        boolean ok = clipSet.get(3, TimeUnit.SECONDS);
+        if (!ok) return errorJson("Failed to set clipboard");
+
+        // Small delay for clipboard to propagate
+        Thread.sleep(100);
+
+        // Simulate KEYCODE_PASTE (279)
+        try {
+            Process p = Runtime.getRuntime().exec(new String[]{"input", "keyevent", "279"});
+            p.waitFor(3, TimeUnit.SECONDS);
+        } catch (Exception e) {
+            Log.e(TAG, "Paste keyevent error: " + e.getMessage());
+            return errorJson("Clipboard set but paste failed: " + e.getMessage());
+        }
+
+        JSONObject result = new JSONObject();
+        result.put("ok", true);
+        result.put("method", "clipboard_paste");
+        result.put("text", text);
+        return result.toString();
     }
 
     private String errorJson(String msg) {
