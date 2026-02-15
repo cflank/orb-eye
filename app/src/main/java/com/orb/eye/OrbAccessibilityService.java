@@ -3,10 +3,14 @@ package com.orb.eye;
 import android.accessibilityservice.AccessibilityService;
 import android.accessibilityservice.GestureDescription;
 import android.app.Notification;
+import android.graphics.Bitmap;
 import android.graphics.Path;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Parcelable;
+import android.util.Base64;
 import android.util.Log;
+import android.view.Display;
 import android.view.accessibility.AccessibilityEvent;
 import android.view.accessibility.AccessibilityNodeInfo;
 
@@ -14,10 +18,12 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
+import java.io.ByteArrayOutputStream;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.concurrent.CompletableFuture;
 import java.util.ArrayDeque;
 import java.util.Queue;
 import java.util.concurrent.CopyOnWriteArrayList;
@@ -276,6 +282,9 @@ public class OrbAccessibilityService extends AccessibilityService {
 
             case "/longpress":
                 return handleLongPress(new JSONObject(body));
+
+            case "/screenshot":
+                return handleScreenshot();
 
             default:
                 return errorJson("Unknown route: " + route);
@@ -778,6 +787,59 @@ public class OrbAccessibilityService extends AccessibilityService {
             }
         }
         return null;
+    }
+
+    // ===== Screenshot =====
+
+    private String handleScreenshot() throws Exception {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
+            return errorJson("Screenshot requires Android 11+");
+        }
+
+        CompletableFuture<String> future = new CompletableFuture<>();
+
+        takeScreenshot(Display.DEFAULT_DISPLAY, getMainExecutor(),
+            new TakeScreenshotCallback() {
+                @Override
+                public void onSuccess(ScreenshotResult result) {
+                    try {
+                        Bitmap bitmap = Bitmap.wrapHardwareBuffer(
+                            result.getHardwareBuffer(), result.getColorSpace());
+                        if (bitmap == null) {
+                            future.complete(errorJson("Failed to create bitmap"));
+                            return;
+                        }
+                        // Convert to software bitmap for compression
+                        Bitmap swBitmap = bitmap.copy(Bitmap.Config.ARGB_8888, false);
+                        bitmap.recycle();
+                        result.getHardwareBuffer().close();
+
+                        ByteArrayOutputStream baos = new ByteArrayOutputStream();
+                        swBitmap.compress(Bitmap.CompressFormat.JPEG, 70, baos);
+                        int w = swBitmap.getWidth();
+                        int h = swBitmap.getHeight();
+                        swBitmap.recycle();
+
+                        String base64 = Base64.encodeToString(baos.toByteArray(), Base64.NO_WRAP);
+                        JSONObject json = new JSONObject();
+                        json.put("ok", true);
+                        json.put("width", w);
+                        json.put("height", h);
+                        json.put("format", "jpeg");
+                        json.put("image", base64);
+                        future.complete(json.toString());
+                    } catch (Exception e) {
+                        future.complete(errorJson("Screenshot encode error: " + e.getMessage()));
+                    }
+                }
+
+                @Override
+                public void onFailure(int errorCode) {
+                    future.complete(errorJson("Screenshot failed with code: " + errorCode));
+                }
+            });
+
+        return future.get(5, TimeUnit.SECONDS);
     }
 
     private String errorJson(String msg) {
