@@ -908,15 +908,32 @@ public class OrbAccessibilityService extends AccessibilityService {
         if (!ok) return errorJson("Failed to set clipboard");
 
         // Small delay for clipboard to propagate
-        Thread.sleep(100);
+        Thread.sleep(150);
 
-        // Simulate KEYCODE_PASTE (279)
+        // Try ACTION_PASTE on focused node first
+        boolean pasted = false;
         try {
-            Process p = Runtime.getRuntime().exec(new String[]{"input", "keyevent", "279"});
-            p.waitFor(3, TimeUnit.SECONDS);
+            AccessibilityNodeInfo focused = findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+            if (focused != null) {
+                pasted = focused.performAction(AccessibilityNodeInfo.ACTION_PASTE);
+                Log.i(TAG, "ACTION_PASTE on focused node: " + pasted);
+            } else {
+                Log.i(TAG, "No focused node found for paste");
+            }
         } catch (Exception e) {
-            Log.e(TAG, "Paste keyevent error: " + e.getMessage());
-            return errorJson("Clipboard set but paste failed: " + e.getMessage());
+            Log.e(TAG, "ACTION_PASTE error: " + e.getMessage());
+        }
+
+        // Fallback: try Ctrl+V via keycombination
+        if (!pasted) {
+            try {
+                Process p = Runtime.getRuntime().exec(new String[]{"input", "keycombination", "113", "50"});
+                p.waitFor(3, TimeUnit.SECONDS);
+                pasted = true;
+                Log.i(TAG, "Ctrl+V keycombination sent");
+            } catch (Exception e) {
+                Log.e(TAG, "keycombination error: " + e.getMessage());
+            }
         }
 
         JSONObject result = new JSONObject();
