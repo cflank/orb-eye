@@ -43,6 +43,17 @@ public class OrbAccessibilityService extends AccessibilityService {
     @Override
     public void onServiceConnected() {
         super.onServiceConnected();
+
+        // Dynamically enforce flags to ensure they take effect
+        android.accessibilityservice.AccessibilityServiceInfo info = getServiceInfo();
+        if (info != null) {
+            info.flags |= android.accessibilityservice.AccessibilityServiceInfo.FLAG_INCLUDE_NOT_IMPORTANT_VIEWS
+                        | android.accessibilityservice.AccessibilityServiceInfo.FLAG_REPORT_VIEW_IDS
+                        | android.accessibilityservice.AccessibilityServiceInfo.FLAG_RETRIEVE_INTERACTIVE_WINDOWS;
+            setServiceInfo(info);
+            Log.i(TAG, "Orb Eye flags updated: " + info.flags);
+        }
+
         Log.i(TAG, "Orb Eye v2.0 service connected");
         startHttpServer();
     }
